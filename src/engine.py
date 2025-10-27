@@ -24,7 +24,7 @@ class Decoding(ABC):
         self.seed_set = set()
         
         # ! only parallel speculative decoding can use 2 processes
-        assert (self.accelerator.num_processes == 1 and args.eval_mode in ["small", "large", "sd"]) or (self.accelerator.num_processes == 2 and args.eval_mode in ["para_sd", "para_sd_wo_1", "para_sd_wo_1", "rc_para_sd"])
+        assert (self.accelerator.num_processes == 1 and args.eval_mode in ["small", "large", "sd", "csv_decode"]) or (self.accelerator.num_processes == 2 and args.eval_mode in ["para_sd", "para_sd_wo_1", "para_sd_wo_1", "rc_para_sd"])
 
         # record metrics for report
         self.draft_forward_times = 0
@@ -49,6 +49,8 @@ class Decoding(ABC):
             self.draft_model = AutoModelForCausalLM.from_pretrained(self.args.draft_model, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True).eval()
         elif self.args.eval_mode == "large":
             self.target_model = AutoModelForCausalLM.from_pretrained(self.args.target_model, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True).eval()
+        elif self.args.eval_mode == "csv_decode":
+            self.target_model = AutoModelForCausalLM.from_pretrained(self.args.target_model, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True).eval()
         elif self.args.eval_mode == "sd":
             self.draft_model = AutoModelForCausalLM.from_pretrained(self.args.draft_model, device_map="cuda:0", torch_dtype=torch.bfloat16, trust_remote_code=True).eval()
             self.target_model = AutoModelForCausalLM.from_pretrained(self.args.target_model, device_map="balanced_low_0", torch_dtype=torch.bfloat16, trust_remote_code=True).eval()
@@ -69,7 +71,7 @@ class Decoding(ABC):
         self.vocab_size = self.args.vocab_size
         
         # Initialize CSV-Decode if enabled
-        if hasattr(self.args, 'use_csv_decode') and self.args.use_csv_decode:
+        if (hasattr(self.args, 'use_csv_decode') and self.args.use_csv_decode) or self.args.eval_mode == "csv_decode":
             self._initialize_csv_decode()
 
     def _initialize_csv_decode(self):

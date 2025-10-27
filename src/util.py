@@ -52,7 +52,7 @@ def parse_arguments():
     parser.add_argument('--target_model', type=str, default="codellama-70b")
     
     parser.add_argument('--exp_name', '-e', type=str, default="test", help='folder name for storing results.')
-    parser.add_argument('--eval_mode', type=str, default="small", choices=["small", "large", "sd", "para_sd", "para_sd_wo_1", "para_sd_wo_2"], help='eval mode.')
+    parser.add_argument('--eval_mode', type=str, default="small", choices=["small", "large", "sd", "para_sd", "para_sd_wo_1", "para_sd_wo_2", "csv_decode"], help='eval mode.')
     parser.add_argument('--num_samples_per_task', '-n', type=int, default=1, help='num_samples for a task (prompt) in humaneval dataset.')
     parser.add_argument('--seed', '-s', type=int, default=1234, help='set a random seed, which can makes the result reproducible')
     parser.add_argument('--max_tokens', type=int, default=1024, help='max token number generated.')
