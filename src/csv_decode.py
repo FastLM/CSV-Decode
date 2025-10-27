@@ -171,6 +171,85 @@ class GeometricBounds:
             bound = centroid_dot + radius * h_norm
             
         return bound.item() + bias_max
+    
+    @staticmethod
+    def compute_improved_bound_with_bias_binning(
+        cluster_metadata: ClusterMetadata,
+        hidden_state: torch.Tensor,
+        bias_bins: Dict[int, List[float]],
+        use_spherical: bool = True
+    ) -> float:
+        """
+        Compute improved upper bound using bias binning for tighter bounds
+        
+        Args:
+            cluster_metadata: Cluster metadata
+            hidden_state: Current hidden state
+            bias_bins: Dictionary mapping cluster_id to sorted bias values
+            use_spherical: Whether to use spherical bounds
+            
+        Returns:
+            Improved upper bound
+        """
+        centroid = cluster_metadata.centroid
+        radius = cluster_metadata.radius
+        cluster_id = cluster_metadata.cluster_id
+        
+        # Get top bias values for this cluster
+        if cluster_id in bias_bins:
+            top_biases = bias_bins[cluster_id]
+            # Use top bias instead of max bias for tighter bound
+            bias_max = max(top_biases) if top_biases else cluster_metadata.bias_max
+        else:
+            bias_max = cluster_metadata.bias_max
+        
+        # Compute geometric bound
+        if use_spherical:
+            h_norm = torch.norm(hidden_state)
+            mu_norm = torch.norm(centroid)
+            
+            if mu_norm > 0 and h_norm > 0:
+                cos_theta = torch.dot(centroid, hidden_state) / (mu_norm * h_norm)
+                angular_radius = radius / mu_norm if mu_norm > 0 else radius
+                bound = h_norm * (mu_norm * cos_theta + angular_radius)
+            else:
+                bound = h_norm * radius
+        else:
+            centroid_dot = torch.dot(centroid, hidden_state)
+            h_norm = torch.norm(hidden_state)
+            bound = centroid_dot + radius * h_norm
+            
+        return bound.item() + bias_max
+    
+    @staticmethod
+    def compute_adaptive_bound(
+        cluster_metadata: ClusterMetadata,
+        hidden_state: torch.Tensor,
+        context_length: int,
+        use_spherical: bool = True
+    ) -> float:
+        """
+        Compute adaptive bound that improves with context length
+        
+        Args:
+            cluster_metadata: Cluster metadata
+            hidden_state: Current hidden state
+            context_length: Length of current context
+            use_spherical: Whether to use spherical bounds
+            
+        Returns:
+            Adaptive upper bound
+        """
+        # Base bound
+        base_bound = GeometricBounds.compute_cluster_upper_bound(
+            cluster_metadata, hidden_state, use_spherical
+        )
+        
+        # Adaptive factor based on context length
+        # Longer context provides better semantic understanding
+        adaptive_factor = min(1.0, 0.7 + 0.3 * (context_length / 100.0))
+        
+        return base_bound * adaptive_factor
 
 
 class CertificationMechanisms:
@@ -268,6 +347,121 @@ class CertificationMechanisms:
         is_certified = relative_error <= epsilon
         
         return is_certified, relative_error
+    
+    @staticmethod
+    def check_nucleus_certification(
+        sub_vocab_logits: torch.Tensor,
+        sub_vocab_indices: List[int],
+        nucleus_p: float,
+        cluster_bounds: Dict[int, float],
+        clusterer: VocabularyClusterer
+    ) -> Tuple[bool, float]:
+        """
+        Check if nucleus sampling is certified
+        
+        Args:
+            sub_vocab_logits: Logits for tokens in sub-vocabulary
+            sub_vocab_indices: Token indices in sub-vocabulary
+            nucleus_p: Nucleus sampling threshold
+            cluster_bounds: Upper bounds for all clusters
+            clusterer: Vocabulary clusterer
+            
+        Returns:
+            (is_certified, coverage_ratio)
+        """
+        # Sort logits in descending order
+        sorted_logits, sorted_indices = torch.sort(sub_vocab_logits, descending=True)
+        
+        # Compute cumulative probabilities
+        probs = torch.softmax(sorted_logits, dim=0)
+        cumulative_probs = torch.cumsum(probs, dim=0)
+        
+        # Find nucleus threshold
+        nucleus_mask = cumulative_probs <= nucleus_p
+        nucleus_size = torch.sum(nucleus_mask).item()
+        
+        if nucleus_size == 0:
+            nucleus_size = 1  # At least include the top token
+        
+        # Check if external clusters can affect nucleus
+        opened_clusters = set()
+        for token_idx in sub_vocab_indices:
+            cluster_id = clusterer.get_cluster_for_token(token_idx)
+            if cluster_id is not None:
+                opened_clusters.add(cluster_id)
+        
+        # Compute external probability mass
+        external_mass = 0.0
+        for cluster_id, bound in cluster_bounds.items():
+            if cluster_id not in opened_clusters:
+                cluster_metadata = clusterer.get_cluster_metadata(cluster_id)
+                if cluster_metadata:
+                    cluster_size = len(cluster_metadata.token_indices)
+                    external_mass += cluster_size * math.exp(bound)
+        
+        # Check if external mass can affect nucleus
+        total_mass = torch.sum(probs).item() + external_mass
+        coverage_ratio = torch.sum(probs[:nucleus_size]).item() / total_mass
+        
+        is_certified = coverage_ratio >= nucleus_p
+        
+        return is_certified, coverage_ratio
+    
+    @staticmethod
+    def check_adaptive_certification(
+        sub_vocab_logits: torch.Tensor,
+        sub_vocab_indices: List[int],
+        k: int,
+        epsilon: float,
+        cluster_bounds: Dict[int, float],
+        clusterer: VocabularyClusterer,
+        context_length: int = 0
+    ) -> Tuple[bool, str, float]:
+        """
+        Adaptive certification that chooses the best certification method
+        
+        Args:
+            sub_vocab_logits: Logits for tokens in sub-vocabulary
+            sub_vocab_indices: Token indices in sub-vocabulary
+            k: Number of top tokens for top-k certification
+            epsilon: Softmax approximation tolerance
+            cluster_bounds: Upper bounds for all clusters
+            clusterer: Vocabulary clusterer
+            context_length: Length of current context
+            
+        Returns:
+            (is_certified, certification_type, confidence_score)
+        """
+        # Try top-k certification first
+        top_k_certified, kth_largest = CertificationMechanisms.check_top_k_certification(
+            sub_vocab_logits, sub_vocab_indices, k, cluster_bounds, clusterer
+        )
+        
+        if top_k_certified:
+            return True, "top_k", 1.0
+        
+        # Try epsilon certification
+        epsilon_certified, relative_error = CertificationMechanisms.check_softmax_epsilon_certification(
+            sub_vocab_logits, sub_vocab_indices, epsilon, cluster_bounds, clusterer
+        )
+        
+        if epsilon_certified:
+            confidence = 1.0 - relative_error
+            return True, "epsilon", confidence
+        
+        # Adaptive fallback based on context length
+        if context_length > 50:
+            # For longer contexts, try relaxed epsilon
+            relaxed_epsilon = epsilon * 2.0
+            relaxed_certified, relaxed_error = CertificationMechanisms.check_softmax_epsilon_certification(
+                sub_vocab_logits, sub_vocab_indices, relaxed_epsilon, cluster_bounds, clusterer
+            )
+            
+            if relaxed_certified:
+                confidence = 1.0 - relaxed_error
+                return True, "relaxed_epsilon", confidence
+        
+        return False, "none", 0.0
 
 
 class CSVDecodeEngine:
