@@ -82,7 +82,7 @@ class Decoding(ABC):
         config = create_csv_decode_config(
             vocab_size=self.vocab_size,
             embedding_dim=getattr(self.args, 'embedding_dim', 4096),
-            num_clusters=getattr(self.args, 'csv_num_clusters', None),
+            num_clusters=getattr(self.args, 'csv_num_clusters', None) or int(0.015 * self.vocab_size),
             epsilon=getattr(self.args, 'csv_epsilon', 0.05)
         )
         
@@ -125,8 +125,9 @@ class Decoding(ABC):
             return
             
         # Initialize clusters
-        self.csv_decode_engine.initialize_clusters(weight_matrix, bias_vector)
-        self.color_print(f"Vocabulary clustered into {len(self.csv_decode_engine.clusterer.clusters)} clusters", 2)
+        if self.csv_decode_engine is not None:
+            self.csv_decode_engine.initialize_clusters(weight_matrix, bias_vector)
+            self.color_print(f"Vocabulary clustered into {len(self.csv_decode_engine.clusterer.clusters)} clusters", 2)
 
     def load_tokenizer(self):
         # * load tokenizers
@@ -639,13 +640,16 @@ class Decoding(ABC):
                 
             # Perform CSV-Decode step
             try:
-                logits, sub_vocab_indices, is_certified, cert_type = self.csv_decode_engine.decode_step(
-                    hidden_state.squeeze(0),  # Remove batch dimension
-                    weight_matrix,
-                    bias_vector,
-                    k=getattr(self.args, 'csv_top_k', 10),
-                    epsilon=getattr(self.args, 'csv_epsilon', 0.05)
-                )
+                if self.csv_decode_engine is not None:
+                    logits, sub_vocab_indices, is_certified, cert_type = self.csv_decode_engine.decode_step(
+                        hidden_state.squeeze(0),  # Remove batch dimension
+                        weight_matrix,
+                        bias_vector,
+                        k=getattr(self.args, 'csv_top_k', 10),
+                        epsilon=getattr(self.args, 'csv_epsilon', 0.05)
+                    )
+                else:
+                    raise Exception("CSV-Decode engine not initialized")
                 
                 if is_certified:
                     certified_steps += 1
