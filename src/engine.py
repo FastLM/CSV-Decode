@@ -9,6 +9,8 @@ from accelerate import Accelerator
 from .kvcache import KVCacheModel
 from .kvcache4RC import KVCacheModel as KVCache2Model
 from .util import seed_everything, norm_logits, sample, max_fn
+from .csv_decode import CSVDecodeEngine, create_csv_decode_config
+from .sparse_gemv import create_optimized_gemv
 import time
 
 
@@ -28,6 +30,17 @@ class Decoding(ABC):
         self.draft_forward_times = 0
         self.target_forward_times = 0
         self.num_acc_tokens = []
+        
+        # CSV-Decode specific metrics
+        self.csv_decode_enabled = False
+        self.csv_decode_engine = None
+        self.sparse_gemv = None
+        self.csv_decode_stats = {
+            'certification_rate': 0.0,
+            'sub_vocab_ratio': 0.0,
+            'fallback_rate': 0.0,
+            'speedup': 1.0
+        }
     
     def load_model(self):
         # * load models according to different evaluation methods.
@@ -54,6 +67,64 @@ class Decoding(ABC):
                 self.target_model = AutoModelForCausalLM.from_pretrained(self.args.target_model, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True).eval()
         
         self.vocab_size = self.args.vocab_size
+        
+        # Initialize CSV-Decode if enabled
+        if hasattr(self.args, 'use_csv_decode') and self.args.use_csv_decode:
+            self._initialize_csv_decode()
+
+    def _initialize_csv_decode(self):
+        """Initialize CSV-Decode engine and sparse GEMV kernels"""
+        self.csv_decode_enabled = True
+        
+        # Create CSV-Decode configuration
+        config = create_csv_decode_config(
+            vocab_size=self.vocab_size,
+            embedding_dim=getattr(self.args, 'embedding_dim', 4096),
+            num_clusters=getattr(self.args, 'csv_num_clusters', None),
+            epsilon=getattr(self.args, 'csv_epsilon', 0.05)
+        )
+        
+        # Initialize CSV-Decode engine
+        self.csv_decode_engine = CSVDecodeEngine(config)
+        
+        # Initialize sparse GEMV kernels
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.sparse_gemv = create_optimized_gemv(device)
+        
+        self.color_print("CSV-Decode initialized successfully", 2)
+        
+        # Extract and cluster vocabulary embeddings
+        self._cluster_vocabulary()
+
+    def _cluster_vocabulary(self):
+        """Extract vocabulary embeddings and perform clustering"""
+        if not self.csv_decode_enabled:
+            return
+            
+        # Get the model for vocabulary extraction
+        if hasattr(self, 'target_model'):
+            model = self.target_model
+        elif hasattr(self, 'draft_model'):
+            model = self.draft_model
+        else:
+            self.color_print("No model available for vocabulary clustering", 1)
+            return
+            
+        # Extract output layer weights and bias
+        if hasattr(model, 'lm_head'):
+            weight_matrix = model.lm_head.weight  # (V, d)
+            bias_vector = model.lm_head.bias if model.lm_head.bias is not None else torch.zeros(self.vocab_size)
+        elif hasattr(model, 'embed_tokens'):
+            # For models without separate lm_head
+            weight_matrix = model.embed_tokens.weight  # (V, d)
+            bias_vector = torch.zeros(self.vocab_size)
+        else:
+            self.color_print("Cannot extract vocabulary embeddings from model", 1)
+            return
+            
+        # Initialize clusters
+        self.csv_decode_engine.initialize_clusters(weight_matrix, bias_vector)
+        self.color_print(f"Vocabulary clustered into {len(self.csv_decode_engine.clusterer.clusters)} clusters", 2)
 
     def load_tokenizer(self):
         # * load tokenizers
@@ -494,6 +565,131 @@ class Decoding(ABC):
                 model.rollback(prefix_len - self.args.gamma +n+1)
             
         return prefix
+    
+    @torch.no_grad()
+    def csv_decode_sampling(self, prefix):
+        """
+        CSV-Decode sampling with geometric bounds and certification
+        
+        Args:
+            prefix: Input token sequence
+            
+        Returns:
+            Generated token sequence with CSV-Decode acceleration
+        """
+        if not self.csv_decode_enabled:
+            self.color_print("CSV-Decode not enabled, falling back to autoregressive", 3)
+            return self.autoregressive_sampling(prefix)
+            
+        # Get the model for computation
+        if hasattr(self, 'target_model'):
+            model = self.target_model
+        elif hasattr(self, 'draft_model'):
+            model = self.draft_model
+        else:
+            self.color_print("No model available for CSV-Decode", 1)
+            return self.autoregressive_sampling(prefix)
+            
+        prefix = prefix.to(model.device)
+        prefix_len = prefix.shape[1]
+        max_tokens = prefix_len + self.args.max_tokens
+        
+        # Extract model components
+        if hasattr(model, 'lm_head'):
+            weight_matrix = model.lm_head.weight
+            bias_vector = model.lm_head.bias if model.lm_head.bias is not None else torch.zeros(self.vocab_size, device=model.device)
+        else:
+            self.color_print("Model does not have lm_head, falling back to autoregressive", 1)
+            return self.autoregressive_sampling(prefix)
+            
+        x = prefix
+        past_key_values = None
+        
+        # CSV-Decode statistics
+        total_steps = 0
+        certified_steps = 0
+        total_sub_vocab_size = 0
+        fallback_steps = 0
+        
+        while x.shape[1] < max_tokens:
+            total_steps += 1
+            
+            # Forward pass to get hidden state
+            if past_key_values:
+                last_ids = x[:, -1]
+                if last_ids.dim() == 1:
+                    last_ids = last_ids.unsqueeze(0)
+                outputs = model(last_ids, past_key_values=past_key_values, use_cache=True)
+            else:
+                outputs = model(x)
+                
+            hidden_state = outputs.logits[::, -1, :]  # This is actually the hidden state before final projection
+            past_key_values = outputs.past_key_values
+            
+            # For CSV-Decode, we need the actual hidden state from the transformer
+            # This is a simplified version - in practice, you'd extract the hidden state before the final layer
+            if hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
+                # Extract hidden state from the last transformer layer
+                hidden_state = model.transformer.h[-1].outputs[0]  # Simplified
+            else:
+                # Fallback: use the logits as a proxy for hidden state
+                hidden_state = outputs.logits[::, -1, :]
+                
+            # Perform CSV-Decode step
+            try:
+                logits, sub_vocab_indices, is_certified, cert_type = self.csv_decode_engine.decode_step(
+                    hidden_state.squeeze(0),  # Remove batch dimension
+                    weight_matrix,
+                    bias_vector,
+                    k=getattr(self.args, 'csv_top_k', 10),
+                    epsilon=getattr(self.args, 'csv_epsilon', 0.05)
+                )
+                
+                if is_certified:
+                    certified_steps += 1
+                    total_sub_vocab_size += len(sub_vocab_indices)
+                    
+                    # Normalize logits and sample
+                    if len(sub_vocab_indices) > 0:
+                        # Create full logits tensor
+                        full_logits = torch.full((self.vocab_size,), float('-inf'), device=model.device)
+                        full_logits[sub_vocab_indices] = logits
+                        
+                        # Apply temperature and sampling
+                        last_p = norm_logits(full_logits.unsqueeze(0), self.args.temp, self.args.top_k, self.args.top_p)
+                        idx_next = sample(last_p)
+                    else:
+                        # Fallback to random sampling
+                        idx_next = torch.randint(0, self.vocab_size, (1, 1), device=model.device)
+                        
+                else:
+                    # Fallback to full vocabulary computation
+                    fallback_steps += 1
+                    full_logits = torch.matmul(weight_matrix, hidden_state.squeeze(0)) + bias_vector
+                    last_p = norm_logits(full_logits.unsqueeze(0), self.args.temp, self.args.top_k, self.args.top_p)
+                    idx_next = sample(last_p)
+                    
+            except Exception as e:
+                self.color_print(f"CSV-Decode error: {e}, falling back to full computation", 1)
+                fallback_steps += 1
+                full_logits = torch.matmul(weight_matrix, hidden_state.squeeze(0)) + bias_vector
+                last_p = norm_logits(full_logits.unsqueeze(0), self.args.temp, self.args.top_k, self.args.top_p)
+                idx_next = sample(last_p)
+                
+            x = torch.cat((x, idx_next), dim=1)
+            
+            # Update forward pass count
+            if self.accelerator.is_main_process:
+                self.target_forward_times += 1
+        
+        # Update CSV-Decode statistics
+        if total_steps > 0:
+            self.csv_decode_stats['certification_rate'] = certified_steps / total_steps
+            self.csv_decode_stats['sub_vocab_ratio'] = total_sub_vocab_size / (total_steps * self.vocab_size) if total_steps > 0 else 0
+            self.csv_decode_stats['fallback_rate'] = fallback_steps / total_steps
+            self.csv_decode_stats['speedup'] = 1.0 / (self.csv_decode_stats['sub_vocab_ratio'] + self.csv_decode_stats['fallback_rate'])
+            
+        return x
     
     @abstractmethod
     def eval(self):

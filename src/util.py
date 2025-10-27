@@ -60,6 +60,14 @@ def parse_arguments():
     parser.add_argument('--top_k', type=int, default=0, help='top_k for ungreedy sampling strategy.')
     parser.add_argument('--top_p', type=float, default=0.95, help='top_p for ungreedy sampling strategy.')
     parser.add_argument('--gamma', type=int, default=4, help='guess time.')
+    
+    # CSV-Decode specific arguments
+    parser.add_argument('--use_csv_decode', action='store_true', help='Enable CSV-Decode acceleration')
+    parser.add_argument('--csv_num_clusters', type=int, default=None, help='Number of clusters for CSV-Decode (default: 0.015 * vocab_size)')
+    parser.add_argument('--csv_epsilon', type=float, default=0.05, help='Softmax approximation tolerance for CSV-Decode')
+    parser.add_argument('--csv_top_k', type=int, default=10, help='Top-k for CSV-Decode certification')
+    parser.add_argument('--embedding_dim', type=int, default=4096, help='Embedding dimension for CSV-Decode')
+    
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
     os.makedirs(args.exp_name, exist_ok=True)
