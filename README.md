@@ -1,9 +1,9 @@
 <div align="center"><h1>&nbsp;CSV-Decode: Certifiable Sub-Vocabulary Decoding for Efficient Large Language Model Inference</h1></div>
 
 *News* 🔥
-- [2025/01] **CSV-Decode**: Novel approach for efficient LLM inference using geometric upper bounds
-- [2025/01] **2-4.95x speedup** over autoregressive baseline with provable correctness guarantees
-- [2025/01] **Universal compatibility** with any LLM architecture without retraining
+- [2025/10] **CSV-Decode**: Novel approach for efficient LLM inference using geometric upper bounds
+- [2025/09] **2-4.95x speedup** over autoregressive baseline with provable correctness guarantees
+- [2025/09] **Universal compatibility** with LLM architecture without retraining
 
 
 
