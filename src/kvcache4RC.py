@@ -9,6 +9,7 @@ class KVCacheModel():
         self._model2 = model2
         self._past_key_values = None
         self._prob_history = None
+        self.vocab_size = None  # Will be set externally
 
         self._temperature = temperature
         self._top_k = top_k
@@ -16,7 +17,7 @@ class KVCacheModel():
 
     def _forward_with_kvcache(self, input_ids : torch.Tensor) -> torch.Tensor:
         if self._past_key_values is None:
-            outputs = self._model(input_ids)
+            outputs = self._model1(input_ids)
             self._prob_history = outputs.logits[:, :, :self.vocab_size]
             for i in range(self._prob_history.shape[-2]):   
                 self._prob_history[:, i, :] = norm_logits(self._prob_history[:, i, :], self._temperature, self._top_k, self._top_p)
@@ -30,7 +31,7 @@ class KVCacheModel():
             if last_input_id.dim() == 1:
                 last_input_id = torch.unsqueeze(last_input_id, 0)
             
-            outputs = self._model(last_input_id, past_key_values=self._past_key_values, use_cache=True)
+            outputs = self._model1(last_input_id, past_key_values=self._past_key_values, use_cache=True)
             
             not_cached_q = outputs.logits[:, :, :self.vocab_size]
             

@@ -7,6 +7,7 @@ class KVCacheModel():
         self._model = model
         self._past_key_values = None
         self._prob_history = None
+        self.vocab_size = None  # Will be set externally
 
         self._temperature = temperature
         self._top_k = top_k
