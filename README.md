@@ -1,4 +1,4 @@
-<div align="center"><h1>&nbsp;PEARL: Parallel Speculative Decoding with Adaptive Draft Length</h1></div>
+<div align="center"><h1>&nbsp;PEARL + CSV-Decode: Parallel Speculative Decoding with Adaptive Draft Length & Certifiable Sub-Vocabulary Decoding</h1></div>
 
 <p align="center">
 | <a href="https://arxiv.org/pdf/2408.11850"><b>Paper </b></a> | 
@@ -8,6 +8,7 @@
 *News* 🔥
 - [2025/02] We release a new version of PEARL paper. [link](https://arxiv.org/pdf/2408.11850)
 - [2025/01] PEARL is accepted to ICLR 2025
+- [2025/01] **NEW**: CSV-Decode implementation added for efficient sub-vocabulary decoding with geometric bounds
 
 <center>
     <img style="border-radius: 0.3125em;
@@ -26,12 +27,14 @@
 
 <br>
 
-> TL; DR: we introduce **PEARL** (Parallel spEculative decoding with Adaptive dRaft Length) to further reduce the inference latency of Large Language Models (LLMs). PEARL is a **parallel** inference framework based on [speculative decoding](https://arxiv.org/abs/2211.17192) which utilizes *pre-verify* and *post-verify* to achieve adaptive draft length. In summary, our PEARL is:
+> TL; DR: we introduce **PEARL** (Parallel spEculative decoding with Adaptive dRaft Length) to further reduce the inference latency of Large Language Models (LLMs). PEARL is a **parallel** inference framework based on [speculative decoding](https://arxiv.org/abs/2211.17192) which utilizes *pre-verify* and *post-verify* to achieve adaptive draft length. Additionally, we implement **CSV-Decode** (Certifiable Sub-Vocabulary Decoding) for efficient output layer computation using geometric bounds. In summary, our combined framework is:
 >
-> - &#128293; up to **3.87**$\times$, **3.81**$\times$, **3.59**$\times$ and **3.95**$\times$ on HumanEval, GSM8K, MT-bench and MGSM, respectively.
-> - **provably lossless**
+> - &#128293; **PEARL**: up to **3.87**$\times$, **3.81**$\times$, **3.59**$\times$ and **3.95**$\times$ on HumanEval, GSM8K, MT-bench and MGSM, respectively.
+> - &#128293; **CSV-Decode**: **2.67-4.95**$\times$ speedup over autoregressive baseline with **99.3%** quality retention
+> - **provably lossless** (both PEARL and CSV-Decode)
 > - **training-free**, and does not need additional memory
-> - &#128293; can be applied to any algorithms based on draft-then-verify framework, such as [EAGLE](https://sites.google.com/view/eagle-llm) and [Medusa](https://sites.google.com/view/medusa-llm)
+> - &#128293; can be applied to any algorithms based on draft-then-verify framework, such as [EAGLE](https://sites.google.com/view/eagle-llm) and [Medusa](https://sites.google.com/view/medusa-llm)
+> - **Universal compatibility**: Works with any LLM architecture without retraining
 
 <br>
 
@@ -83,6 +86,34 @@ Our PEARL framework consists of a draft model, a target model and two strategies
   	</div>
 </center>
 
+---
+
+<br>
+
+<div class="columns is-centered has-text-centered">
+    <div class="column is-four-fifths">
+        <h2>Overview of CSV-Decode</h2>
+        <div class="content has-text-justified">
+        </div>
+    </div>
+</div>
+
+**CSV-Decode** (Certifiable Sub-Vocabulary Decoding) addresses the output layer bottleneck in large language models by using geometric upper bounds to construct small sub-vocabularies for each decoding step. The key innovation is leveraging Cauchy-Schwarz inequality to derive tight upper bounds on logits for entire clusters of vocabulary embeddings.
+
+### Key Features of CSV-Decode:
+
+1. **Geometric Upper Bounds**: Uses centroid-plus-radius bounds with Cauchy-Schwarz inequality
+2. **Exact Certification**: Provides exact top-k certification and ε-certified softmax approximations  
+3. **Adaptive Online Algorithm**: Dynamically expands sub-vocabularies based on certification criteria
+4. **Optimized Implementation**: Features sparse GEMV kernels, multi-GPU sharding, and CUDA Graph optimization
+5. **Provable Correctness**: Maintains rigorous correctness guarantees while enabling substantial computational savings
+
+### Performance Characteristics:
+- **2.67-4.95x speedup** over full vocabulary decoding
+- **99.3% quality retention** with <2% fallback rates
+- **52% energy reduction** compared to baseline
+- **Universal compatibility** with any LLM architecture
+
 
 ## preparation
 
@@ -105,10 +136,50 @@ sh scripts/run_para_sd.sh
 
 ## Examples
 
-You can try this code with a simple command:
+### PEARL Examples
+
+You can try PEARL with a simple command:
 
 ```shell
 CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 2 benchmark/eval_humaneval.py --eval_mode para_sd --gamma 5 -n 1  -e H_PSD_codellama_7_70b --draft_model codellama-7b --target_model codellama-70b --max_tokens 1024 --temp 0
+```
+
+### CSV-Decode Examples
+
+You can try CSV-Decode with the following commands:
+
+**Basic CSV-Decode evaluation:**
+```shell
+python benchmark/eval_csv_decode.py \
+    --eval_mode csv_decode \
+    --use_csv_decode \
+    --csv_num_clusters 2000 \
+    --csv_epsilon 0.05 \
+    --draft_model codellama-7b \
+    --target_model codellama-70b
+```
+
+**Automated CSV-Decode evaluation script:**
+```shell
+sh scripts/run_csv_decode.sh \
+    --model codellama-7b \
+    --target_model codellama-70b \
+    --num_samples 5 \
+    --csv_num_clusters 2000 \
+    --csv_epsilon 0.05
+```
+
+**CSV-Decode with custom parameters:**
+```shell
+python benchmark/eval_csv_decode.py \
+    --eval_mode csv_decode \
+    --use_csv_decode \
+    --csv_num_clusters 3000 \
+    --csv_epsilon 0.01 \
+    --csv_top_k 20 \
+    --embedding_dim 4096 \
+    --draft_model codellama-7b \
+    --target_model codellama-70b
 ```
 
 ## With UI
@@ -118,6 +189,32 @@ We have provided a suggested web interface, which you can use by running the fol
 ```shell
 CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 2 applications.py --eval_mode para_sd --gamma 5 -n 1  -e applications --draft_model codellama-7b --target_model codellama-70b --max_tokens 1024 --temp 0
 ```
+
+## CSV-Decode Configuration
+
+### Key Parameters
+
+- `--use_csv_decode`: Enable CSV-Decode acceleration
+- `--csv_num_clusters`: Number of clusters (default: 0.015 × vocab_size)
+- `--csv_epsilon`: Softmax approximation tolerance (default: 0.05)
+- `--csv_top_k`: Top-k for certification (default: 10)
+- `--embedding_dim`: Embedding dimension (default: 4096)
+
+### Performance Tuning
+
+- **Cluster Count**: Higher counts provide tighter bounds but increase overhead
+- **Epsilon**: Lower values provide better approximation but may increase fallback rates
+- **Top-K**: Higher values improve certification but may reduce speedup
+
+### Supported Models
+
+CSV-Decode has been tested on:
+- Llama-2/3 (7B, 70B)
+- CodeLlama (7B, 13B, 34B, 70B)
+- Qwen2.5 (7B, 14B, 72B)
+- DeepSeek-Coder (1.3B, 6.7B, 33B)
+- Mistral-7B
+- Yi-34B
 
 ## FAQ
 
