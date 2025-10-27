@@ -1,90 +1,27 @@
-<div align="center"><h1>&nbsp;PEARL + CSV-Decode: Parallel Speculative Decoding with Adaptive Draft Length & Certifiable Sub-Vocabulary Decoding</h1></div>
-
-<p align="center">
-| <a href="https://arxiv.org/pdf/2408.11850"><b>Paper </b></a> | 
-<a href="https://pearl-code.github.io/"><b>Blog</b></a> | <a href="https://zhuanlan.zhihu.com/p/716769091"><b>知乎</b></a> |
-</p>
+<div align="center"><h1>&nbsp;CSV-Decode: Certifiable Sub-Vocabulary Decoding for Efficient Large Language Model Inference</h1></div>
 
 *News* 🔥
-- [2025/02] We release a new version of PEARL paper. [link](https://arxiv.org/pdf/2408.11850)
-- [2025/01] PEARL is accepted to ICLR 2025
-- [2025/01] **NEW**: CSV-Decode implementation added for efficient sub-vocabulary decoding with geometric bounds
-
-<center>
-    <img style="border-radius: 0.3125em;
-    box-shadow: 0 2px 4px 0 rgba(34,36,38,.12),0 2px 10px 0 rgba(34,36,38,.08);" 
-    src="https://s2.loli.net/2024/08/13/u3tc4FAwxQG126y.png" width = "100%" alt=""/>
-    <br>
-    <div style="color:orange; border-bottom: 1px solid #d9d9d9;
-    display: inline-block;
-    color: #999;
-    padding: 2px;">
-      Figure 1. Speedup on HumanEval. All the experiments are conducted with H100 80G GPUs. The part results of <a href="https://github.com/thunlp/Ouroboros">Ouroboros</a> and <a href="https://github.com/hao-ai-lab/LookaheadDecoding">Lookahead Decoding</a> are reproduced with their official codes.
-  	</div>
-</center>
+- [2025/01] **CSV-Decode**: Novel approach for efficient LLM inference using geometric upper bounds
+- [2025/01] **2-4.95x speedup** over autoregressive baseline with provable correctness guarantees
+- [2025/01] **Universal compatibility** with any LLM architecture without retraining
 
 
 
 <br>
 
-> TL; DR: we introduce **PEARL** (Parallel spEculative decoding with Adaptive dRaft Length) to further reduce the inference latency of Large Language Models (LLMs). PEARL is a **parallel** inference framework based on [speculative decoding](https://arxiv.org/abs/2211.17192) which utilizes *pre-verify* and *post-verify* to achieve adaptive draft length. Additionally, we implement **CSV-Decode** (Certifiable Sub-Vocabulary Decoding) for efficient output layer computation using geometric bounds. In summary, our combined framework is:
+> TL; DR: we introduce **CSV-Decode** (Certifiable Sub-Vocabulary Decoding) to address the output layer bottleneck in Large Language Models (LLMs). CSV-Decode uses geometric upper bounds to construct small sub-vocabularies for each decoding step, enabling efficient sparse computation while maintaining dual correctness guarantees. In summary, our CSV-Decode is:
 >
-> - &#128293; **PEARL**: up to **3.87**$\times$, **3.81**$\times$, **3.59**$\times$ and **3.95**$\times$ on HumanEval, GSM8K, MT-bench and MGSM, respectively.
-> - &#128293; **CSV-Decode**: **2.67-4.95**$\times$ speedup over autoregressive baseline with **99.3%** quality retention
-> - **provably lossless** (both PEARL and CSV-Decode)
-> - **training-free**, and does not need additional memory
-> - &#128293; can be applied to any algorithms based on draft-then-verify framework, such as [EAGLE](https://sites.google.com/view/eagle-llm) and [Medusa](https://sites.google.com/view/medusa-llm)
-> - **Universal compatibility**: Works with any LLM architecture without retraining
+> - &#128293; **2.67-4.95x speedup** over autoregressive baseline across multiple models and tasks
+> - **99.3% quality retention** with <2% fallback rates to full vocabulary computation
+> - **52% energy reduction** compared to baseline inference
+> - **Provably correct**: Exact top-k certification and ε-certified softmax approximations
+> - **Training-free**: Works with any pre-trained LLM without retraining
+> - **Universal compatibility**: Supports all major LLM architectures (Llama, CodeLlama, Qwen, DeepSeek, etc.)
+> - **Advanced optimizations**: Sparse GEMV kernels, multi-GPU sharding, and CUDA Graph integration
 
 <br>
 
 <!-- Using HTML to center the abstract -->
-
-
-
----
-
-<br>
-
-<div class="columns is-centered has-text-centered">
-    <div class="column is-four-fifths">
-        <h2>Demo</h2>
-        <div class="content has-text-justified">
-        </div>
-    </div>
-</div>
-
-![AR-demo](static/AR-demo.gif)
-
-<p align="center" style="color:gray;">Figure 2.  Generation speed of Llama 2 chat 70B using PEARL and auto-regressive decoding, with inference conducted on A100 80G GPUs at bf16 precision. </p>
-
----
-
-<br>
-
-<div class="columns is-centered has-text-centered">
-    <div class="column is-four-fifths">
-        <h2>Overview of PEARL</h2>
-        <div class="content has-text-justified">
-        </div>
-    </div>
-</div>
-
-
-Our PEARL framework consists of a draft model, a target model and two strategies to decode tokens. The two strategies are switched according to the verification results in the last decoding step.
-
-<center>
-    <img style="border-radius: 0.3125em;
-    box-shadow: 0 2px 4px 0 rgba(34,36,38,.12),0 2px 10px 0 rgba(34,36,38,.08);" 
-    src="https://s2.loli.net/2024/08/13/aoCAybN7S2KWsXd.png" width = "100%" alt=""/>
-    <br>
-    <div style="color:orange; border-bottom: 1px solid #d9d9d9;
-    display: inline-block;
-    color: #999;
-    padding: 2px;">
-      Figure 3. Overview of PEARL. PEARL achieves parallelism through adaptively using pre-verify and post-verify.
-  	</div>
-</center>
 
 ---
 
@@ -98,21 +35,31 @@ Our PEARL framework consists of a draft model, a target model and two strategies
     </div>
 </div>
 
-**CSV-Decode** (Certifiable Sub-Vocabulary Decoding) addresses the output layer bottleneck in large language models by using geometric upper bounds to construct small sub-vocabularies for each decoding step. The key innovation is leveraging Cauchy-Schwarz inequality to derive tight upper bounds on logits for entire clusters of vocabulary embeddings.
+**CSV-Decode** addresses the fundamental bottleneck in LLM inference: the expensive output layer computation over large vocabularies. Our key insight is that for most decoding steps, only a small subset of the vocabulary actually contributes meaningfully to the final output distribution.
 
-### Key Features of CSV-Decode:
+### Core Innovation: Geometric Upper Bounds
 
-1. **Geometric Upper Bounds**: Uses centroid-plus-radius bounds with Cauchy-Schwarz inequality
-2. **Exact Certification**: Provides exact top-k certification and ε-certified softmax approximations  
-3. **Adaptive Online Algorithm**: Dynamically expands sub-vocabularies based on certification criteria
-4. **Optimized Implementation**: Features sparse GEMV kernels, multi-GPU sharding, and CUDA Graph optimization
-5. **Provable Correctness**: Maintains rigorous correctness guarantees while enabling substantial computational savings
+CSV-Decode leverages geometric reasoning to identify which tokens can be safely omitted from computation:
 
-### Performance Characteristics:
-- **2.67-4.95x speedup** over full vocabulary decoding
-- **99.3% quality retention** with <2% fallback rates
-- **52% energy reduction** compared to baseline
-- **Universal compatibility** with any LLM architecture
+1. **Vocabulary Clustering**: Offline K-means clustering groups semantically similar tokens
+2. **Cauchy-Schwarz Bounds**: Derives tight upper bounds on logits for entire clusters
+3. **Certification Mechanisms**: Provides exact top-k certification and ε-certified softmax approximations
+4. **Adaptive Algorithm**: Dynamically expands sub-vocabularies based on certification criteria
+
+### Mathematical Foundation
+
+For any token i in cluster c, we bound the logit using Cauchy-Schwarz inequality:
+
+```
+ℓi(t) = ⟨Wi, ht⟩ + bi ≤ ⟨μc, ht⟩ + Rc∥ht∥2 + max_j∈c bj
+```
+
+Where:
+- `μc`: Cluster centroid
+- `Rc`: Cluster radius  
+- `ht`: Hidden state at step t
+
+This enables us to skip entire clusters without computing individual token logits, while maintaining provable correctness guarantees.
 
 
 ## preparation
@@ -135,16 +82,6 @@ sh scripts/run_para_sd.sh
 
 
 ## Examples
-
-### PEARL Examples
-
-You can try PEARL with a simple command:
-
-```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 2 benchmark/eval_humaneval.py --eval_mode para_sd --gamma 5 -n 1  -e H_PSD_codellama_7_70b --draft_model codellama-7b --target_model codellama-70b --max_tokens 1024 --temp 0
-```
-
-### CSV-Decode Examples
 
 You can try CSV-Decode with the following commands:
 
@@ -185,9 +122,9 @@ python benchmark/eval_csv_decode.py \
 ## With UI
 We have provided a suggested web interface, which you can use by running the following command. 
 
-> <span style="color:lightblue">Currently, This `applications.py` is just a test demo for visualization, and there are many bugs in the ugly code. We strongly recommend users to refer to `benchmark/eval_mt_bench.py`. Running this demo with UI MUST enable the button `Use PEARL` and `Highlight the tokens generated by PEARL`. </span>
+> <span style="color:lightblue">Currently, This `applications.py` is just a test demo for visualization, and there are many bugs in the ugly code. We strongly recommend users to refer to `benchmark/eval_csv_decode.py`. Running this demo with UI MUST enable the button `Use CSV-Decode` and `Highlight the tokens generated by CSV-Decode`. </span>
 ```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 2 applications.py --eval_mode para_sd --gamma 5 -n 1  -e applications --draft_model codellama-7b --target_model codellama-70b --max_tokens 1024 --temp 0
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 2 applications.py --eval_mode csv_decode --use_csv_decode -n 1  -e applications --draft_model codellama-7b --target_model codellama-70b --max_tokens 1024 --temp 0
 ```
 
 ## CSV-Decode Configuration
@@ -226,13 +163,24 @@ In latest `transformers` (version >= 4.49.0), all the past_key_values are class 
 
 This issue may be directly caused due to precision overflow. You can add `.to(torch.float32)` to solve this issue. (Such as Line 187 of `src/engine.py`)
 
-3. Performance on Qwen Series Model.
+3. CSV-Decode: CUDA Out of Memory.
 
-We briefly test the speedup of PEARL based on Qwen 2.5 7b & 72b, and find that PEARL can achieve over 2.5$\times$ speedup as well. Any additional experiment is warmly welcomed!
+This issue may occur with large vocabulary sizes. Try reducing `--csv_num_clusters` or `--max_sub_vocab_size` in the configuration.
 
-4. Other details.
+4. CSV-Decode: Low Certification Rate.
 
-Please refer to the <a href="https://zhuanlan.zhihu.com/p/716769091"><b>知乎</b></a> blog.
+If certification rates are low, try increasing `--csv_num_clusters` or adjusting `--csv_epsilon` to a higher value (e.g., 0.1).
+
+5. CSV-Decode: High Fallback Rate.
+
+High fallback rates indicate loose bounds. Check cluster quality or reduce `--csv_top_k` for better performance.
+
+6. CSV-Decode Performance Optimization.
+
+For optimal performance:
+- Ensure good vocabulary clustering with appropriate cluster count
+- Use optimized sparse GEMV kernels for your hardware
+- Process multiple sequences together for better GPU utilization
 
 
 <div class="columns is-centered has-text-centered">
@@ -247,25 +195,13 @@ Please refer to the <a href="https://zhuanlan.zhihu.com/p/716769091"><b>知乎</
 If you find our work useful your research, please cite our paper:
 
 ```
-@inproceedings{
-liu2025pearl,
-title={{PEARL}: Parallel Speculative Decoding with Adaptive Draft Length},
-author={Tianyu Liu and Yun Li and Qitan Lv and Kai Liu and Jianchen Zhu and Winston Hu and Xiao Sun},
-booktitle={The Thirteenth International Conference on Learning Representations},
-year={2025},
-url={https://openreview.net/forum?id=QOXrVMiHGK}
+@article{liu2025csvdecode,
+  title={CSV-Decode: Certifiable Sub-Vocabulary Decoding for Efficient Large Language Model Inference},
+  author={Liu, Dong and Yu, Yanxuan and Lengerich, Ben},
+  year={2025}
 }
-
-
-@misc{liu2025pearlparallelspeculativedecoding,
-      title={PEARL: Parallel Speculative Decoding with Adaptive Draft Length}, 
-      author={Tianyu Liu and Yun Li and Qitan Lv and Kai Liu and Jianchen Zhu and Winston Hu and Xiao Sun},
-      year={2025},
-      eprint={2408.11850},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2408.11850}, 
-}
-
-
 ```
+
+## Acknowledgments
+
+This codebase is built upon the **PEARL** framework. We gratefully acknowledge the PEARL team for providing the foundation that made this CSV-Decode implementation possible.
