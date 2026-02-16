@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from sklearn.cluster import KMeans
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import heapq
 import math
 from dataclasses import dataclass
@@ -465,14 +465,16 @@ class CertificationMechanisms:
 
 
 class CSVDecodeEngine:
-    """Main CSV-Decode engine implementing the online algorithm"""
-    
-    def __init__(self, config: CSVDecodeConfig):
+    """Main CSV-Decode engine implementing the online algorithm (Algorithm 1 in paper)."""
+
+    def __init__(self, config: CSVDecodeConfig, sparse_gemv_backend: Any = None):
         self.config = config
         self.clusterer = VocabularyClusterer(config)
         self.bounds_computer = GeometricBounds()
         self.certifier = CertificationMechanisms()
-        
+        # Optional: use optimized sparse GEMV kernels (see sparse_gemv.py) in the inference loop
+        self.sparse_gemv_backend = sparse_gemv_backend
+
         # Runtime state
         self.cluster_bounds: Dict[int, float] = {}
         self.priority_queue: List[Tuple[float, int]] = []  # Max-heap: (-bound, cluster_id)
@@ -501,56 +503,70 @@ class CSVDecodeEngine:
         current_sub_vocab: List[int],
         current_logits: torch.Tensor,
         k: int,
-        epsilon: float
+        epsilon: float,
+        embedding_matrix: torch.Tensor,
+        bias_vector: torch.Tensor,
+        hidden_state: torch.Tensor,
     ) -> Tuple[List[int], torch.Tensor, bool, str]:
         """
-        Expand sub-vocabulary using CSV-Decode algorithm
-        
+        Expand sub-vocabulary using CSV-Decode algorithm (Algorithm 1 in paper).
+        Logits are computed via sparse GEMV: ℓ_i = ⟨W_i, h_t⟩ + b_i (no simulation).
+
         Args:
             current_sub_vocab: Current sub-vocabulary token indices
             current_logits: Logits for current sub-vocabulary
             k: Number of top tokens for certification
             epsilon: Softmax approximation tolerance
-            
+            embedding_matrix: Output layer weight W (V, d)
+            bias_vector: Bias b (V,)
+            hidden_state: Hidden state h_t (d,)
+
         Returns:
             (expanded_sub_vocab, expanded_logits, is_certified, certification_type)
         """
         sub_vocab = current_sub_vocab.copy()
         logits = current_logits.clone()
-        
+
         while len(sub_vocab) < self.config.max_sub_vocab_size:
             # Check certifications
             top_k_certified, kth_largest = self.certifier.check_top_k_certification(
                 logits, sub_vocab, k, self.cluster_bounds, self.clusterer
             )
-            
+
             epsilon_certified, relative_error = self.certifier.check_softmax_epsilon_certification(
                 logits, sub_vocab, epsilon, self.cluster_bounds, self.clusterer
             )
-            
+
             if top_k_certified or epsilon_certified:
                 cert_type = "top_k" if top_k_certified else "epsilon"
                 return sub_vocab, logits, True, cert_type
-            
+
             # Expand by adding highest-priority cluster
             if not self.priority_queue:
                 break
-                
+
             _, cluster_id = heapq.heappop(self.priority_queue)
             cluster_metadata = self.clusterer.get_cluster_metadata(cluster_id)
-            
+
             if cluster_metadata is None:
                 continue
-                
-            # Add all tokens from this cluster to sub-vocabulary
+
+            # Add all tokens from this cluster; compute logits via sparse GEMV (paper Eq. 2)
             new_tokens = cluster_metadata.token_indices
             sub_vocab.extend(new_tokens)
-            
-            # Note: In practice, you would compute actual logits for these tokens
-            # For now, we'll use placeholder values
-            new_logits = torch.randn(len(new_tokens), device=logits.device)
+
+            # Sparse GEMV: gathered_rows = W[indices]; logits = gathered_rows @ h_t + bias[indices]
+            if self.sparse_gemv_backend is not None:
+                new_logits = self.sparse_gemv_backend.compute_logits(
+                    embedding_matrix, hidden_state, new_tokens, bias_vector,
+                    use_tensor_cores=getattr(self.config, 'use_tensor_cores', False),
+                    use_tiling=getattr(self.config, 'use_tiling', True),
+                )
+            else:
+                gathered_rows = embedding_matrix[new_tokens]
+                new_logits = torch.matmul(gathered_rows, hidden_state) + bias_vector[new_tokens]
             logits = torch.cat([logits, new_logits], dim=0)
-        
+
         return sub_vocab, logits, False, "fallback"
     
     def decode_step(
@@ -559,7 +575,7 @@ class CSVDecodeEngine:
         embedding_matrix: torch.Tensor,
         bias_vector: torch.Tensor,
         k: int = 10,
-        epsilon: float = None
+        epsilon: Optional[float] = None
     ) -> Tuple[torch.Tensor, List[int], bool, str]:
         """
         Perform one CSV-Decode step
@@ -587,18 +603,19 @@ class CSVDecodeEngine:
         sub_vocab = []
         logits = torch.empty(0, device=hidden_state.device)
         
-        # Expand sub-vocabulary
+        # Expand sub-vocabulary (with real logits from sparse GEMV, not simulated)
         final_sub_vocab, final_logits, is_certified, cert_type = self.expand_sub_vocabulary(
-            sub_vocab, logits, k, epsilon
+            sub_vocab, logits, k, epsilon,
+            embedding_matrix, bias_vector, hidden_state,
         )
-        
+
         return final_logits, final_sub_vocab, is_certified, cert_type
 
 
 def create_csv_decode_config(
     vocab_size: int,
     embedding_dim: int,
-    num_clusters: int = None,
+    num_clusters: Optional[int] = None,
     epsilon: float = 0.05
 ) -> CSVDecodeConfig:
     """

@@ -152,6 +152,18 @@ CSV-Decode has been tested on:
 - Mistral-7B
 - Yi-34B
 
+## Implementation Notes (Reproducibility)
+
+1. **Softmax variants (Hierarchical & Adaptive Softmax)**  
+   The paper compares CSV-Decode to Hierarchical Softmax [Mikolov et al.] and Adaptive Softmax [Grave et al.]. Implementations of these baselines are in **`src/softmax_variants.py`**: `HierarchicalSoftmax` and `AdaptiveSoftmax`, with factory helpers `build_hierarchical_softmax` and `build_adaptive_softmax`. They are provided for ablation and Table II–style comparisons; CSV-Decode itself does not use them.
+
+2. **Logit computation (no simulation)**  
+   Logits in the decode step are computed from the real output layer: **ℓ_i = ⟨W_i, h_t⟩ + b_i** (paper Eq. 2). In `src/csv_decode.py`, `expand_sub_vocabulary` takes `embedding_matrix`, `bias_vector`, and `hidden_state`, and uses **sparse GEMV** (`gathered_rows = W[indices]; logits = gathered_rows @ h_t + bias[indices]`). There is no placeholder or random logit simulation; the previous `torch.randn` placeholder has been removed.
+
+3. **Sparse GEMV kernels and CUDA Graph**  
+   - **Sparse GEMV**: Implemented in **`src/sparse_gemv.py`** (COO row-gather + GEMV, multi-level tiling, Tensor Core path). The inference loop in **`src/csv_decode.py`** uses this when you pass a `sparse_gemv_backend` to `CSVDecodeEngine(..., sparse_gemv_backend=create_optimized_gemv(device))`; otherwise it uses the same formula via PyTorch `matmul` and indexing.  
+   - **CUDA Graph**: **`src/cuda_graph.py`** provides `CUDAGraphCapture` for capturing/replaying fixed-shape sparse GEMV to reduce kernel launch overhead (paper Section IV). Integration is optional; use `use_cuda_graph_for_sparse_gemv` or wire `CUDAGraphCapture` into your decode loop for maximum throughput.
+
 ## FAQ
 
 1. AttributeError: 'list' object has no attribute 'get_seq_length'.
