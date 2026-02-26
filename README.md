@@ -207,9 +207,13 @@ If you find our work useful your research, please cite our paper:
 
 ```
 @article{liu2025csvdecode,
-  title={CSV-Decode: Certifiable Sub-Vocabulary Decoding for Efficient Large Language Model Inference},
-  author={Liu, Dong and Yu, Yanxuan and Lengerich, Ben},
-  year={2025}
+      title={CSV-Decode: Certifiable Sub-Vocabulary Decoding for Efficient Large Language Model Inference}, 
+      author={Dong Liu and Yanxuan Yu and Ben Lengerich},
+      year={2025},
+      eprint={2511.21702},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2511.21702}, 
 }
 ```
 
