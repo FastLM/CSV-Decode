@@ -206,10 +206,10 @@ For optimal performance:
 If you find our work useful your research, please cite our paper:
 
 ```
-@article{liu2025csvdecode,
+@article{csv-decode,
       title={CSV-Decode: Certifiable Sub-Vocabulary Decoding for Efficient Large Language Model Inference}, 
-      author={Dong Liu and Yanxuan Yu and Ben Lengerich},
-      year={2025},
+      author={Dong Liu and Shu Wang and Yanxuan Yu and Haisheng Wang and Ben Lengerich},
+      year={2026},
       eprint={2511.21702},
       archivePrefix={arXiv},
       primaryClass={cs.CL},
